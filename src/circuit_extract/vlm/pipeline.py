@@ -77,9 +77,9 @@ class VLMExtractionPipeline:
         self.stages.append(StageResult("components", comp_result))
 
         # Stage 2: nets, conditioned on the components from stage 1
-        components_json = _ComponentList(
-            components=comp_result.components
-        ).model_dump_json(indent=2)
+        components_json = _ComponentList(components=comp_result.components).model_dump_json(
+            indent=2
+        )
         nets_prompt = NETS_PROMPT.format(components_json=components_json)
         netlist = self.provider.generate_json(
             nets_prompt,

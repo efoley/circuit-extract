@@ -63,9 +63,7 @@ class GeminiProvider(VLMProvider):
 
     # ------------------------------------------------------------------ helpers
 
-    def _build_contents(
-        self, prompt: str, images: list[ImageInput] | None
-    ) -> list[Any]:
+    def _build_contents(self, prompt: str, images: list[ImageInput] | None) -> list[Any]:
         contents: list[Any] = []
         if images:
             contents.extend(_load_image(img) for img in images)

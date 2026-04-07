@@ -21,6 +21,15 @@ uv sync
 cp .env.example .env       # then add GEMINI_API_KEY
 ```
 
+## Checks
+
+```bash
+uv run ruff check src tests       # lint
+uv run ruff format --check src tests  # format check (use `ruff format` to fix)
+uv run ty check                   # type-check (Astral's ty)
+uv run pytest -q                  # tests
+```
+
 ## Usage
 
 ```bash

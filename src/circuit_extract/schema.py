@@ -74,8 +74,7 @@ class Component(BaseModel):
     value: str | None = Field(
         default=None,
         description=(
-            "Value or part number as printed on the schematic, "
-            "e.g. '10k', '100nF', 'LM358'."
+            "Value or part number as printed on the schematic, e.g. '10k', '100nF', 'LM358'."
         ),
     )
     pins: list[str] = Field(
@@ -111,14 +110,12 @@ class Net(BaseModel):
 
     name: str = Field(
         description=(
-            "Net name. Use schematic labels (VCC, GND, CLK) when present, "
-            "else 'N1', 'N2', ..."
+            "Net name. Use schematic labels (VCC, GND, CLK) when present, else 'N1', 'N2', ..."
         ),
     )
     pins: list[PinRef] = Field(
         description=(
-            "All pins that belong to this net. "
-            "Must contain at least 2 entries for a valid wire."
+            "All pins that belong to this net. Must contain at least 2 entries for a valid wire."
         ),
     )
 
@@ -137,8 +134,7 @@ class Netlist(BaseModel):
     extractor: str | None = Field(
         default=None,
         description=(
-            "Name of the pipeline that produced this netlist "
-            "(e.g. 'vlm:gemini-2.5-flash')."
+            "Name of the pipeline that produced this netlist (e.g. 'vlm:gemini-2.5-flash')."
         ),
     )
 

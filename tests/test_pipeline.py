@@ -8,7 +8,7 @@ pipeline plumbing in isolation from Gemini.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TypeVar
+from typing import TypeVar, cast
 
 from pydantic import BaseModel
 
@@ -47,7 +47,7 @@ class FakeProvider(VLMProvider):
         temperature: float = 0.0,
     ) -> T:
         self.calls.append(schema.__name__)
-        return self.responses[schema]  # type: ignore[return-value]
+        return cast(T, self.responses[schema])
 
 
 def test_multi_step_pipeline_runs_two_stages(tmp_path: Path) -> None:
