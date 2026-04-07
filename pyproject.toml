@@ -1,0 +1,51 @@
+[project]
+name = "circuit-extract"
+version = "0.1.0"
+description = "Extract circuit netlists from schematic drawings using VLMs and computer vision."
+authors = [
+    { name = "circuit-extract contributors" },
+]
+requires-python = ">=3.11"
+dependencies = [
+    "google-genai>=1.0.0",
+    "pydantic>=2.7",
+    "pillow>=10.3",
+    "typer>=0.12",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+# Approach 2 (YOLO + OpenCV wire tracing). Kept optional so the default
+# install stays light while we iterate on the VLM approach.
+cv = [
+    "opencv-python>=4.10",
+    "numpy>=1.26",
+    "ultralytics>=8.3",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.2",
+    "ruff>=0.5",
+]
+
+[project.scripts]
+circuit-extract = "circuit_extract.cli:app"
+
+[build-system]
+requires = ["uv_build>=0.8.17,<0.9.0"]
+build-backend = "uv_build"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.ruff.lint.per-file-ignores]
+# typer's standard pattern requires Argument/Option calls in defaults.
+"src/circuit_extract/cli.py" = ["B008"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
