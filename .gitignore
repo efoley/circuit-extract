@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# uv / venv
+.venv/
+uv.lock.local
+
+# Editors
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+
+# Secrets / env
+.env
+.env.local
+
+# Notebook clutter
+.ipynb_checkpoints/
+
+# Data — keep dir, ignore contents
+data/*
+!data/.gitkeep
+!data/README.md
+
+# Local outputs
+outputs/
+*.netlist.json
