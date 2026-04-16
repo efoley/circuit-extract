@@ -81,6 +81,15 @@ def eval_command(
     output: Path | None = typer.Option(
         None, "--output", "-o", help="Write JSON results to this file."
     ),
+    data_dir: Path | None = typer.Option(
+        None,
+        "--data-dir",
+        "-d",
+        help=(
+            "Pre-downloaded dataset directory. Must contain 'images/' and 'sp/' "
+            "subdirectories with matching filenames. Skips HuggingFace download."
+        ),
+    ),
 ) -> None:
     """Evaluate VLM extraction against ground-truth SPICE netlists."""
     from circuit_extract.datasets import SchematicDataset
@@ -95,7 +104,7 @@ def eval_command(
     pipeline = VLMExtractionPipeline(provider=vlm, multi_step=not oneshot)
 
     typer.echo(f"Loading dataset (max_items={max_items})...", err=True)
-    dataset = SchematicDataset(max_items=max_items).load()
+    dataset = SchematicDataset(max_items=max_items, data_dir=data_dir).load()
     typer.echo(f"Loaded {len(dataset)} items.", err=True)
 
     results: list[EvalResult] = []
