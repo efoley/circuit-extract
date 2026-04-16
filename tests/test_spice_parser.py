@@ -1,4 +1,8 @@
-"""Tests for the HSPICE netlist parser."""
+"""Tests for the HSPICE netlist parser.
+
+Covers both the hanky2397 dataset format (.subckt-wrapped, topology-only)
+and standard HSPICE (flat with values).
+"""
 
 from __future__ import annotations
 
@@ -6,6 +10,58 @@ from pathlib import Path
 
 from circuit_extract.datasets.spice_parser import parse_spice
 from circuit_extract.schema import Netlist
+
+# -----------------------------------------------------------------------
+# hanky2397 dataset format (topology-only, .subckt-wrapped)
+# -----------------------------------------------------------------------
+
+DATASET_MOSFETS_AND_BJTS = """\
+
+.subckt 000001_output
+q0 gnd gnd net9 pnp
+q1 gnd gnd net8 pnp
+q2 gnd gnd net6 pnp
+m3 net3 net3 net0 net0 pmos4
+m4 net1 net1 net6 net6 nmos4
+m5 net3 net1 net7 net7 nmos4
+m6 net5 net4 net0 net0 pmos4
+m7 net1 net2 net0 net0 pmos4
+r8 net5 net9 r
+r9 net7 net8 r
+.ends
+"""
+
+DATASET_SOURCES_AND_CAP = """\
+
+.subckt 000299_output
+v0 net4 gnd v
+r1 net1 net3 r
+i2 net5 gnd i
+r3 net0 net2 r
+i4 net6 gnd i
+q5 net2 net4 net5 npn
+q6 net3 net2 net6 npn
+c9 net5 net6 c
+.ends
+"""
+
+DATASET_CAPS_AND_MOSFETS = """\
+
+.subckt 000026_output
+m0 net1 net2 net0 net0 pmos4
+m1 net4 net3 net0 net0 pmos4
+m2 net1 net5 net8 net8 nmos4
+m3 net8 net12 gnd gnd nmos4
+m4 net4 net7 net8 net8 nmos4
+c5 net1 net12 c
+c7 net12 net4 c
+.ends
+"""
+
+
+# -----------------------------------------------------------------------
+# Standard HSPICE format (flat with values)
+# -----------------------------------------------------------------------
 
 VOLTAGE_DIVIDER_SP = """\
 * Voltage divider
@@ -61,6 +117,74 @@ def _parse_string(sp: str, tmp_path: Path) -> Netlist:
     return parse_spice(f)
 
 
+# -----------------------------------------------------------------------
+# Dataset format tests
+# -----------------------------------------------------------------------
+
+
+def test_dataset_mosfets_and_bjts(tmp_path: Path) -> None:
+    nl = _parse_string(DATASET_MOSFETS_AND_BJTS, tmp_path)
+    assert len(nl.components) == 10
+    types = {c.id: c.type for c in nl.components}
+    assert types["q0"] == "bjt_pnp"
+    assert types["m3"] == "pmos"
+    assert types["m4"] == "nmos"
+    assert types["r8"] == "resistor"
+
+
+def test_dataset_mosfet_pins(tmp_path: Path) -> None:
+    nl = _parse_string(DATASET_MOSFETS_AND_BJTS, tmp_path)
+    m3 = next(c for c in nl.components if c.id == "m3")
+    assert m3.pins == ["D", "G", "S", "B"]
+    assert m3.type == "pmos"
+
+
+def test_dataset_bjt_pins(tmp_path: Path) -> None:
+    nl = _parse_string(DATASET_MOSFETS_AND_BJTS, tmp_path)
+    q0 = next(c for c in nl.components if c.id == "q0")
+    assert q0.pins == ["C", "B", "E"]
+    assert q0.type == "bjt_pnp"
+
+
+def test_dataset_sources_and_cap(tmp_path: Path) -> None:
+    nl = _parse_string(DATASET_SOURCES_AND_CAP, tmp_path)
+    assert len(nl.components) == 8
+    types = {c.id: c.type for c in nl.components}
+    assert types["v0"] == "voltage_source"
+    assert types["i2"] == "current_source"
+    assert types["c9"] == "capacitor"
+    assert types["q5"] == "bjt_npn"
+
+
+def test_dataset_gnd_net(tmp_path: Path) -> None:
+    nl = _parse_string(DATASET_SOURCES_AND_CAP, tmp_path)
+    gnd_net = next(n for n in nl.nets if n.name == "GND")
+    comp_ids = {ref.component_id for ref in gnd_net.pins}
+    assert "v0" in comp_ids
+    assert "i2" in comp_ids
+    assert "i4" in comp_ids
+
+
+def test_dataset_no_values(tmp_path: Path) -> None:
+    """Dataset format components should have no value (topology-only)."""
+    nl = _parse_string(DATASET_CAPS_AND_MOSFETS, tmp_path)
+    for comp in nl.components:
+        if comp.type != "ic":
+            assert comp.value is None, f"{comp.id} should have no value"
+
+
+def test_dataset_net_connectivity(tmp_path: Path) -> None:
+    nl = _parse_string(DATASET_CAPS_AND_MOSFETS, tmp_path)
+    net_map = {n.name: {(r.component_id, r.pin) for r in n.pins} for n in nl.nets}
+    assert ("m0", "S") in net_map["net0"]
+    assert ("m1", "S") in net_map["net0"]
+
+
+# -----------------------------------------------------------------------
+# Standard HSPICE format tests
+# -----------------------------------------------------------------------
+
+
 def test_voltage_divider(tmp_path: Path) -> None:
     nl = _parse_string(VOLTAGE_DIVIDER_SP, tmp_path)
     assert len(nl.components) == 3
@@ -81,7 +205,6 @@ def test_mosfet_inverter(tmp_path: Path) -> None:
     types = {c.id: c.type for c in nl.components}
     assert types["M1"] == "nmos"
     assert types["M2"] == "nmos"
-    # M1 should have 4 pins: D G S B
     m1 = next(c for c in nl.components if c.id == "M1")
     assert m1.pins == ["D", "G", "S", "B"]
 
