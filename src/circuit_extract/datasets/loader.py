@@ -30,6 +30,7 @@ class DatasetItem:
     image_path: Path
     spice_path: Path
     stem: str
+    yolo_path: Path | None = None
     _netlist: Netlist | None = field(default=None, repr=False)
 
     @property
@@ -75,8 +76,11 @@ class SchematicDataset:
         fast iteration.
     data_dir:
         Path to a pre-downloaded dataset directory. Must contain ``images/``
-        and ``sp/`` subdirectories with matching filenames. When set, skips
-        the HuggingFace download entirely.
+        and ``sp/`` subdirectories (and optionally ``components/``) with
+        matching filenames. When set, skips the HuggingFace download.
+    include_yolo:
+        If True, also load YOLO ground-truth bounding-box annotations
+        (``components.zip`` from the dataset / ``components/`` locally).
     """
 
     cache_dir: Path = field(
@@ -84,23 +88,24 @@ class SchematicDataset:
     )
     max_items: int | None = None
     data_dir: Path | None = None
+    include_yolo: bool = False
     items: list[DatasetItem] = field(default_factory=list, repr=False)
 
     def load(self) -> SchematicDataset:
         """Download (if needed), extract, and pair images with netlists."""
         if self.data_dir is not None:
-            images_dir, spice_dir = self._load_local()
+            images_dir, spice_dir, yolo_dir = self._load_local()
         else:
-            images_dir, spice_dir = self._load_remote()
+            images_dir, spice_dir, yolo_dir = self._load_remote()
 
         image_map = _find_files(images_dir, ".png") | _find_files(images_dir, ".jpg")
         spice_map = _find_files(spice_dir, ".sp")
+        yolo_map = _find_files(yolo_dir, ".txt") if yolo_dir is not None else {}
         logger.info(
-            "found %d images and %d .sp files under %s / %s",
+            "found %d images, %d .sp, %d yolo annotation files",
             len(image_map),
             len(spice_map),
-            images_dir.name,
-            spice_dir.name,
+            len(yolo_map),
         )
 
         paired_stems = sorted(set(image_map) & set(spice_map))
@@ -113,12 +118,13 @@ class SchematicDataset:
                 image_path=image_map[stem],
                 spice_path=spice_map[stem],
                 stem=stem,
+                yolo_path=yolo_map.get(stem),
             )
             for stem in paired_stems
         ]
         return self
 
-    def _load_local(self) -> tuple[Path, Path]:
+    def _load_local(self) -> tuple[Path, Path, Path | None]:
         assert self.data_dir is not None
         images_dir = self.data_dir / "images"
         spice_dir = self.data_dir / "sp"
@@ -128,13 +134,24 @@ class SchematicDataset:
             )
         if not spice_dir.is_dir():
             raise FileNotFoundError(f"Expected 'sp/' subdirectory in {self.data_dir}, not found.")
-        return images_dir, spice_dir
+        yolo_dir: Path | None = None
+        if self.include_yolo:
+            yolo_dir = self.data_dir / "components"
+            if not yolo_dir.is_dir():
+                logger.warning(
+                    "include_yolo=True but no 'components/' subdirectory at %s", self.data_dir
+                )
+                yolo_dir = None
+        return images_dir, spice_dir, yolo_dir
 
-    def _load_remote(self) -> tuple[Path, Path]:
+    def _load_remote(self) -> tuple[Path, Path, Path | None]:
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         images_dir = _download_and_extract("images.zip", self.cache_dir)
         spice_dir = _download_and_extract("sp.zip", self.cache_dir)
-        return images_dir, spice_dir
+        yolo_dir: Path | None = None
+        if self.include_yolo:
+            yolo_dir = _download_and_extract("components.zip", self.cache_dir)
+        return images_dir, spice_dir, yolo_dir
 
     def __len__(self) -> int:
         return len(self.items)

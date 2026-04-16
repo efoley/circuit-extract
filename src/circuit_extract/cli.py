@@ -16,12 +16,17 @@ import json
 import logging
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING, Protocol
 
 import typer
 from dotenv import load_dotenv
 
 from circuit_extract.providers import get_provider
 from circuit_extract.vlm import VLMExtractionPipeline
+
+if TYPE_CHECKING:
+    from circuit_extract.eval.metrics import EvalResult
+    from circuit_extract.schema import Netlist
 
 
 def _configure_logging(verbose: bool) -> None:
@@ -38,6 +43,48 @@ def _configure_logging(verbose: bool) -> None:
         handler.setFormatter(logging.Formatter("%(asctime)s %(message)s", datefmt="%H:%M:%S"))
         logger.addHandler(handler)
     logger.propagate = False
+
+
+class _VizItem(Protocol):
+    image_path: Path
+    stem: str
+    yolo_path: Path | None
+
+
+def _write_viz(viz_dir: Path, item: _VizItem, predicted: Netlist, result: EvalResult) -> None:
+    """Write per-image overlay PNG and the predicted netlist JSON.
+
+    Left panel: predicted bboxes from the VLM. Right panel: ground-truth YOLO
+    bboxes when the item has them (hanky2397 only); otherwise pred-only.
+    """
+    from PIL import Image
+
+    from circuit_extract.overlay import (
+        load_yolo_annotations,
+        overlay_netlist,
+        overlay_yolo,
+        side_by_side,
+    )
+
+    img = Image.open(item.image_path).convert("RGB")
+
+    pred_title = (
+        f"pred: {item.stem}  "
+        f"F1={result.components.f1:.2f} ARI={result.nets.adjusted_rand_index:.2f}"
+    )
+    pred_img = overlay_netlist(img, predicted, title=pred_title)
+
+    if item.yolo_path is not None and item.yolo_path.exists():
+        annotations = load_yolo_annotations(item.yolo_path, image_size=img.size)
+        gt_img = overlay_yolo(img, annotations, title=f"ground truth: {item.stem}")
+        combined = side_by_side(pred_img, gt_img)
+    else:
+        combined = pred_img
+
+    png_path = viz_dir / f"{item.stem}.png"
+    json_path = viz_dir / f"{item.stem}.pred.json"
+    combined.save(png_path)
+    json_path.write_text(predicted.model_dump_json(indent=2))
 
 
 app = typer.Typer(
@@ -135,11 +182,20 @@ def eval_command(
             "Default: shard 0 (~1,000 schematics, ~200 MB)."
         ),
     ),
+    viz_dir: Path | None = typer.Option(
+        None,
+        "--viz-dir",
+        help=(
+            "Write per-image overlay PNGs into this directory: "
+            "predicted bboxes on the left, ground-truth YOLO bboxes on the right. "
+            "The predicted netlist JSON is also saved alongside."
+        ),
+    ),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable DEBUG logging."),
 ) -> None:
     """Evaluate VLM extraction against ground-truth netlists."""
     from circuit_extract.datasets import OpenSchematicsDataset, SchematicDataset
-    from circuit_extract.eval import EvalResult, evaluate
+    from circuit_extract.eval import evaluate
 
     load_dotenv()
     _configure_logging(verbose)
@@ -166,12 +222,21 @@ def eval_command(
             shard_indices=shard_indices,
         ).load()
     elif dataset == "hanky2397":
-        loaded = SchematicDataset(max_items=max_items, data_dir=data_dir).load()
+        # Only hanky2397 has YOLO ground-truth bboxes; open-schematics falls
+        # back to pred-only overlays inside `_write_viz`.
+        loaded = SchematicDataset(
+            max_items=max_items,
+            data_dir=data_dir,
+            include_yolo=viz_dir is not None,
+        ).load()
     else:
         raise typer.BadParameter(
             f"unknown --dataset {dataset!r}; choose 'open-schematics' or 'hanky2397'"
         )
     log.info("loaded %d items", len(loaded))  # type: ignore[arg-type]
+
+    if viz_dir is not None:
+        viz_dir.mkdir(parents=True, exist_ok=True)
 
     results: list[EvalResult] = []
     total = len(loaded)  # type: ignore[arg-type]
@@ -189,6 +254,8 @@ def eval_command(
                 result.components.f1,
                 result.nets.adjusted_rand_index,
             )
+            if viz_dir is not None:
+                _write_viz(viz_dir, item, predicted, result)
         except Exception as e:
             log.error("  ERROR: %s", e)
 
@@ -266,6 +333,72 @@ def parse_spice_command(
     else:
         output.write_text(payload)
         typer.echo(f"Wrote {output}", err=True)
+
+
+@app.command("overlay")
+def overlay_command(
+    image: Path = typer.Argument(..., exists=True, readable=True, help="Schematic image."),
+    pred: Path | None = typer.Option(
+        None,
+        "--pred",
+        help="Predicted netlist JSON (from `circuit-extract vlm -o`). "
+        "Draws component bboxes color-coded by type.",
+    ),
+    yolo: Path | None = typer.Option(
+        None,
+        "--yolo",
+        help="Ground-truth YOLO annotation .txt (from the dataset's components.zip).",
+    ),
+    output: Path = typer.Option(
+        Path("overlay.png"), "--output", "-o", help="Where to write the annotated PNG."
+    ),
+    mode: str = typer.Option(
+        "side",
+        "--mode",
+        help="Layout when both --pred and --yolo are given: 'side' (default) "
+        "or 'pred_only' or 'yolo_only'.",
+    ),
+) -> None:
+    """Render bounding-box overlays on a schematic image."""
+    from PIL import Image
+
+    from circuit_extract.overlay import (
+        load_yolo_annotations,
+        overlay_netlist,
+        overlay_yolo,
+        side_by_side,
+    )
+    from circuit_extract.schema import Netlist
+
+    if pred is None and yolo is None:
+        typer.echo("error: provide at least one of --pred or --yolo", err=True)
+        raise typer.Exit(2)
+
+    img = Image.open(image).convert("RGB")
+
+    pred_img = None
+    yolo_img = None
+
+    if pred is not None:
+        netlist = Netlist.model_validate_json(pred.read_text())
+        pred_img = overlay_netlist(img, netlist, title=f"predicted ({image.name})")
+
+    if yolo is not None:
+        annotations = load_yolo_annotations(yolo, image_size=img.size)
+        yolo_img = overlay_yolo(img, annotations, title=f"ground truth ({image.name})")
+
+    if pred_img and yolo_img and mode == "side":
+        result = side_by_side(pred_img, yolo_img)
+    elif mode == "pred_only" and pred_img is not None:
+        result = pred_img
+    elif mode == "yolo_only" and yolo_img is not None:
+        result = yolo_img
+    else:
+        result = pred_img or yolo_img
+        assert result is not None
+
+    result.save(output)
+    typer.echo(f"Wrote {output}", err=True)
 
 
 @app.command("pipeline")
