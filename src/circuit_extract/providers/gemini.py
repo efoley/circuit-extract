@@ -2,7 +2,7 @@
 
 Uses the modern ``google-genai`` SDK (``google.genai``), which natively
 supports pydantic models as the structured-output schema. The default model is
-Gemini 2.5 Flash since it's our zero-shot baseline.
+Gemini 3 Flash (preview).
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 
 T = TypeVar("T", bound=BaseModel)
 
-DEFAULT_MODEL = "gemini-2.5-flash"
+DEFAULT_MODEL = "gemini-3-flash-preview"
 
 
 def _load_image(img: ImageInput) -> Image.Image:
