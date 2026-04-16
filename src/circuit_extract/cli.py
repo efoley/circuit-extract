@@ -13,6 +13,7 @@ Output is JSON on stdout (or to ``--output``) and matches
 from __future__ import annotations
 
 import json
+import logging
 import sys
 from pathlib import Path
 
@@ -21,6 +22,22 @@ from dotenv import load_dotenv
 
 from circuit_extract.providers import get_provider
 from circuit_extract.vlm import VLMExtractionPipeline
+
+
+def _configure_logging(verbose: bool) -> None:
+    """Route circuit_extract.* loggers to stderr.
+
+    We only touch our own namespace so we don't affect root handlers added by
+    dependencies (google-genai's http client in particular can be very chatty).
+    """
+    level = logging.DEBUG if verbose else logging.INFO
+    logger = logging.getLogger("circuit_extract")
+    logger.setLevel(level)
+    if not logger.handlers:
+        handler = logging.StreamHandler(sys.stderr)
+        handler.setFormatter(logging.Formatter("%(asctime)s %(message)s", datefmt="%H:%M:%S"))
+        logger.addHandler(handler)
+    logger.propagate = False
 
 app = typer.Typer(
     name="circuit-extract",
@@ -90,40 +107,47 @@ def eval_command(
             "subdirectories with matching filenames. Skips HuggingFace download."
         ),
     ),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable DEBUG logging."),
 ) -> None:
     """Evaluate VLM extraction against ground-truth SPICE netlists."""
     from circuit_extract.datasets import SchematicDataset
     from circuit_extract.eval import EvalResult, evaluate
 
     load_dotenv()
+    _configure_logging(verbose)
+    log = logging.getLogger("circuit_extract.eval")
 
     provider_kwargs: dict[str, object] = {}
     if model is not None:
         provider_kwargs["model"] = model
     vlm = get_provider(provider, **provider_kwargs)
     pipeline = VLMExtractionPipeline(provider=vlm, multi_step=not oneshot)
+    log.info("provider=%s model=%s multi_step=%s", vlm.name, vlm.model, not oneshot)
 
-    typer.echo(f"Loading dataset (max_items={max_items})...", err=True)
+    log.info("loading dataset (max_items=%d)...", max_items)
     dataset = SchematicDataset(max_items=max_items, data_dir=data_dir).load()
-    typer.echo(f"Loaded {len(dataset)} items.", err=True)
+    log.info("loaded %d items", len(dataset))
 
     results: list[EvalResult] = []
     for i, item in enumerate(dataset):
-        typer.echo(f"[{i + 1}/{len(dataset)}] {item.stem}...", err=True)
+        log.info("[%d/%d] %s", i + 1, len(dataset), item.stem)
         try:
             predicted = pipeline.run(item.image_path)
             result = evaluate(predicted, item.ground_truth, stem=item.stem)
             results.append(result)
-            typer.echo(
-                f"  components F1={result.components.f1:.2f}  "
-                f"nets ARI={result.nets.adjusted_rand_index:.2f}",
-                err=True,
+            log.info(
+                "  components: pred=%d gt=%d matched=%d F1=%.2f | nets ARI=%.2f",
+                result.components.predicted,
+                result.components.ground_truth,
+                result.components.matched,
+                result.components.f1,
+                result.nets.adjusted_rand_index,
             )
         except Exception as e:
-            typer.echo(f"  ERROR: {e}", err=True)
+            log.error("  ERROR: %s", e)
 
     if not results:
-        typer.echo("No results to report.", err=True)
+        log.error("No results to report.")
         raise typer.Exit(1)
 
     # Aggregate

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, Field
 
 # A loose set of canonical component types. We keep this open ("other") because
 # the VLM will encounter symbols we haven't enumerated, and we'd rather capture
@@ -52,8 +52,6 @@ class BBox(BaseModel):
     Coordinates are normalised to integers; (x1, y1) is the top-left corner.
     """
 
-    model_config = ConfigDict(extra="forbid")
-
     x1: int
     y1: int
     x2: int
@@ -62,8 +60,6 @@ class BBox(BaseModel):
 
 class Component(BaseModel):
     """A single circuit element identified in the schematic."""
-
-    model_config = ConfigDict(extra="forbid")
 
     id: str = Field(
         description="Reference designator, e.g. 'R1', 'C2', 'U3'. Unique within a netlist.",
@@ -97,16 +93,12 @@ class Component(BaseModel):
 class PinRef(BaseModel):
     """A reference to a specific pin of a specific component."""
 
-    model_config = ConfigDict(extra="forbid")
-
     component_id: str
     pin: str
 
 
 class Net(BaseModel):
     """An electrical net: a set of pins that are wired together."""
-
-    model_config = ConfigDict(extra="forbid")
 
     name: str = Field(
         description=(
@@ -122,8 +114,6 @@ class Net(BaseModel):
 
 class Netlist(BaseModel):
     """Top-level netlist produced by an extraction pipeline."""
-
-    model_config = ConfigDict(extra="forbid")
 
     components: list[Component]
     nets: list[Net]
