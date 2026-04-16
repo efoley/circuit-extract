@@ -7,6 +7,8 @@ model so we can inspect, log, or persist intermediate state.
 
 from __future__ import annotations
 
+import logging
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -20,6 +22,8 @@ from circuit_extract.vlm.prompts import (
     ONESHOT_PROMPT,
     SYSTEM_PROMPT,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class _ComponentList(BaseModel):
@@ -58,25 +62,42 @@ class VLMExtractionPipeline:
         self.stages.clear()
 
         if not self.multi_step:
+            logger.info("stage 1/1 (oneshot): calling VLM...")
+            t0 = time.perf_counter()
             netlist = self.provider.generate_json(
                 ONESHOT_PROMPT,
                 schema=Netlist,
                 images=[image_path],
                 system=SYSTEM_PROMPT,
             )
+            logger.info(
+                "  -> %d components, %d nets (%.1fs)",
+                len(netlist.components),
+                len(netlist.nets),
+                time.perf_counter() - t0,
+            )
             self.stages.append(StageResult("oneshot", netlist))
             return self._finalise(netlist, image_path)
 
         # Stage 1: components
+        logger.info("stage 1/2: extracting components...")
+        t0 = time.perf_counter()
         comp_result = self.provider.generate_json(
             COMPONENTS_PROMPT,
             schema=_ComponentList,
             images=[image_path],
             system=SYSTEM_PROMPT,
         )
+        logger.info(
+            "  -> %d components (%.1fs)",
+            len(comp_result.components),
+            time.perf_counter() - t0,
+        )
         self.stages.append(StageResult("components", comp_result))
 
         # Stage 2: nets, conditioned on the components from stage 1
+        logger.info("stage 2/2: tracing nets...")
+        t1 = time.perf_counter()
         components_json = _ComponentList(components=comp_result.components).model_dump_json(
             indent=2
         )
@@ -87,6 +108,7 @@ class VLMExtractionPipeline:
             images=[image_path],
             system=SYSTEM_PROMPT,
         )
+        logger.info("  -> %d nets (%.1fs)", len(netlist.nets), time.perf_counter() - t1)
         self.stages.append(StageResult("nets", netlist))
 
         return self._finalise(netlist, image_path)

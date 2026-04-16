@@ -1,9 +1,10 @@
 """Command-line entry point for circuit-extract.
 
-Two commands today (more to come for approach 2):
+Commands:
 
-    circuit-extract vlm <image>          # multi-step VLM extraction
-    circuit-extract vlm <image> --oneshot  # single-prompt baseline
+    circuit-extract vlm <image>            # multi-step VLM extraction
+    circuit-extract vlm <image> --oneshot   # single-prompt baseline
+    circuit-extract eval [--max-items N]   # run VLM pipeline on dataset and report metrics
 
 Output is JSON on stdout (or to ``--output``) and matches
 :class:`circuit_extract.schema.Netlist`.
@@ -11,6 +12,9 @@ Output is JSON on stdout (or to ``--output``) and matches
 
 from __future__ import annotations
 
+import json
+import logging
+import sys
 from pathlib import Path
 
 import typer
@@ -18,6 +22,22 @@ from dotenv import load_dotenv
 
 from circuit_extract.providers import get_provider
 from circuit_extract.vlm import VLMExtractionPipeline
+
+
+def _configure_logging(verbose: bool) -> None:
+    """Route circuit_extract.* loggers to stderr.
+
+    We only touch our own namespace so we don't affect root handlers added by
+    dependencies (google-genai's http client in particular can be very chatty).
+    """
+    level = logging.DEBUG if verbose else logging.INFO
+    logger = logging.getLogger("circuit_extract")
+    logger.setLevel(level)
+    if not logger.handlers:
+        handler = logging.StreamHandler(sys.stderr)
+        handler.setFormatter(logging.Formatter("%(asctime)s %(message)s", datefmt="%H:%M:%S"))
+        logger.addHandler(handler)
+    logger.propagate = False
 
 app = typer.Typer(
     name="circuit-extract",
@@ -65,6 +85,141 @@ def vlm_command(
     if show_warnings:
         for warning in netlist.validate_consistency():
             typer.echo(f"warning: {warning}", err=True)
+
+
+@app.command("eval")
+def eval_command(
+    provider: str = typer.Option("gemini", "--provider", "-p", help="VLM provider name."),
+    model: str | None = typer.Option(None, "--model", "-m", help="Override provider model."),
+    max_items: int = typer.Option(
+        50, "--max-items", "-n", help="Max images to evaluate (default 50)."
+    ),
+    oneshot: bool = typer.Option(False, "--oneshot", help="Use single-prompt baseline."),
+    output: Path | None = typer.Option(
+        None, "--output", "-o", help="Write JSON results to this file."
+    ),
+    data_dir: Path | None = typer.Option(
+        None,
+        "--data-dir",
+        "-d",
+        help=(
+            "Pre-downloaded dataset directory. Must contain 'images/' and 'sp/' "
+            "subdirectories with matching filenames. Skips HuggingFace download."
+        ),
+    ),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable DEBUG logging."),
+) -> None:
+    """Evaluate VLM extraction against ground-truth SPICE netlists."""
+    from circuit_extract.datasets import SchematicDataset
+    from circuit_extract.eval import EvalResult, evaluate
+
+    load_dotenv()
+    _configure_logging(verbose)
+    log = logging.getLogger("circuit_extract.eval")
+
+    provider_kwargs: dict[str, object] = {}
+    if model is not None:
+        provider_kwargs["model"] = model
+    vlm = get_provider(provider, **provider_kwargs)
+    pipeline = VLMExtractionPipeline(provider=vlm, multi_step=not oneshot)
+    log.info("provider=%s model=%s multi_step=%s", vlm.name, vlm.model, not oneshot)
+
+    log.info("loading dataset (max_items=%d)...", max_items)
+    dataset = SchematicDataset(max_items=max_items, data_dir=data_dir).load()
+    log.info("loaded %d items", len(dataset))
+
+    results: list[EvalResult] = []
+    for i, item in enumerate(dataset):
+        log.info("[%d/%d] %s", i + 1, len(dataset), item.stem)
+        try:
+            predicted = pipeline.run(item.image_path)
+            result = evaluate(predicted, item.ground_truth, stem=item.stem)
+            results.append(result)
+            log.info(
+                "  components: pred=%d gt=%d matched=%d F1=%.2f | nets ARI=%.2f",
+                result.components.predicted,
+                result.components.ground_truth,
+                result.components.matched,
+                result.components.f1,
+                result.nets.adjusted_rand_index,
+            )
+        except Exception as e:
+            log.error("  ERROR: %s", e)
+
+    if not results:
+        log.error("No results to report.")
+        raise typer.Exit(1)
+
+    # Aggregate
+    avg_f1 = sum(r.components.f1 for r in results) / len(results)
+    avg_prec = sum(r.components.precision for r in results) / len(results)
+    avg_rec = sum(r.components.recall for r in results) / len(results)
+    avg_ari = sum(r.nets.adjusted_rand_index for r in results) / len(results)
+
+    summary = {
+        "n_images": len(results),
+        "components": {
+            "avg_precision": round(avg_prec, 4),
+            "avg_recall": round(avg_rec, 4),
+            "avg_f1": round(avg_f1, 4),
+        },
+        "nets": {
+            "avg_adjusted_rand_index": round(avg_ari, 4),
+        },
+        "per_image": [
+            {
+                "stem": r.stem,
+                "components": {
+                    "precision": round(r.components.precision, 4),
+                    "recall": round(r.components.recall, 4),
+                    "f1": round(r.components.f1, 4),
+                    "matched": r.components.matched,
+                    "predicted": r.components.predicted,
+                    "ground_truth": r.components.ground_truth,
+                },
+                "nets": {
+                    "ari": round(r.nets.adjusted_rand_index, 4),
+                    "common_pins": r.nets.common_pins,
+                    "predicted_pins": r.nets.predicted_pins,
+                    "ground_truth_pins": r.nets.ground_truth_pins,
+                },
+            }
+            for r in results
+        ],
+    }
+
+    payload = json.dumps(summary, indent=2)
+    if output is None:
+        sys.stdout.write(payload + "\n")
+    else:
+        output.write_text(payload)
+        typer.echo(f"Wrote {output}", err=True)
+
+    typer.echo(
+        f"\n=== Aggregate ({len(results)} images) ===\n"
+        f"  Components: P={avg_prec:.3f}  R={avg_rec:.3f}  F1={avg_f1:.3f}\n"
+        f"  Nets:       ARI={avg_ari:.3f}",
+        err=True,
+    )
+
+
+@app.command("parse-spice")
+def parse_spice_command(
+    spice_file: Path = typer.Argument(..., exists=True, readable=True, help="SPICE .sp file."),
+    output: Path | None = typer.Option(
+        None, "--output", "-o", help="Write JSON here instead of stdout."
+    ),
+) -> None:
+    """Parse a SPICE netlist into our JSON schema (useful for debugging)."""
+    from circuit_extract.datasets.spice_parser import parse_spice
+
+    netlist = parse_spice(spice_file)
+    payload = netlist.model_dump_json(indent=2)
+    if output is None:
+        typer.echo(payload)
+    else:
+        output.write_text(payload)
+        typer.echo(f"Wrote {output}", err=True)
 
 
 @app.command("pipeline")
