@@ -39,6 +39,7 @@ def _configure_logging(verbose: bool) -> None:
         logger.addHandler(handler)
     logger.propagate = False
 
+
 app = typer.Typer(
     name="circuit-extract",
     help="Extract circuit netlists from schematic drawings.",
@@ -89,6 +90,15 @@ def vlm_command(
 
 @app.command("eval")
 def eval_command(
+    dataset: str = typer.Option(
+        "open-schematics",
+        "--dataset",
+        help=(
+            "Which dataset to evaluate against: 'open-schematics' (bshada/open-schematics, "
+            "realistic KiCad renderings — default) or 'hanky2397' (hanky2397/schematic_images, "
+            "synthetic + HSPICE)."
+        ),
+    ),
     provider: str = typer.Option("gemini", "--provider", "-p", help="VLM provider name."),
     model: str | None = typer.Option(None, "--model", "-m", help="Override provider model."),
     max_items: int = typer.Option(
@@ -103,14 +113,32 @@ def eval_command(
         "--data-dir",
         "-d",
         help=(
-            "Pre-downloaded dataset directory. Must contain 'images/' and 'sp/' "
-            "subdirectories with matching filenames. Skips HuggingFace download."
+            "Pre-downloaded dataset directory (hanky2397 only: needs 'images/' and 'sp/'). "
+            "Skips HuggingFace download."
+        ),
+    ),
+    min_components: int = typer.Option(
+        6,
+        "--min-components",
+        help="Filter: minimum real components per schematic (open-schematics only).",
+    ),
+    max_components: int = typer.Option(
+        20,
+        "--max-components",
+        help="Filter: maximum real components per schematic (open-schematics only).",
+    ),
+    shards: str = typer.Option(
+        "0",
+        "--shards",
+        help=(
+            "Comma-separated shard indices to read (open-schematics only; 0..77). "
+            "Default: shard 0 (~1,000 schematics, ~200 MB)."
         ),
     ),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable DEBUG logging."),
 ) -> None:
-    """Evaluate VLM extraction against ground-truth SPICE netlists."""
-    from circuit_extract.datasets import SchematicDataset
+    """Evaluate VLM extraction against ground-truth netlists."""
+    from circuit_extract.datasets import OpenSchematicsDataset, SchematicDataset
     from circuit_extract.eval import EvalResult, evaluate
 
     load_dotenv()
@@ -124,13 +152,31 @@ def eval_command(
     pipeline = VLMExtractionPipeline(provider=vlm, multi_step=not oneshot)
     log.info("provider=%s model=%s multi_step=%s", vlm.name, vlm.model, not oneshot)
 
-    log.info("loading dataset (max_items=%d)...", max_items)
-    dataset = SchematicDataset(max_items=max_items, data_dir=data_dir).load()
-    log.info("loaded %d items", len(dataset))
+    log.info("loading dataset=%s (max_items=%d)...", dataset, max_items)
+    loaded: object
+    if dataset == "open-schematics":
+        try:
+            shard_indices = tuple(int(s) for s in shards.split(",") if s.strip())
+        except ValueError as e:
+            raise typer.BadParameter(f"invalid --shards value: {shards!r}") from e
+        loaded = OpenSchematicsDataset(
+            max_items=max_items,
+            min_components=min_components,
+            max_components=max_components,
+            shard_indices=shard_indices,
+        ).load()
+    elif dataset == "hanky2397":
+        loaded = SchematicDataset(max_items=max_items, data_dir=data_dir).load()
+    else:
+        raise typer.BadParameter(
+            f"unknown --dataset {dataset!r}; choose 'open-schematics' or 'hanky2397'"
+        )
+    log.info("loaded %d items", len(loaded))  # type: ignore[arg-type]
 
     results: list[EvalResult] = []
-    for i, item in enumerate(dataset):
-        log.info("[%d/%d] %s", i + 1, len(dataset), item.stem)
+    total = len(loaded)  # type: ignore[arg-type]
+    for i, item in enumerate(loaded):  # type: ignore[arg-type]
+        log.info("[%d/%d] %s", i + 1, total, item.stem)
         try:
             predicted = pipeline.run(item.image_path)
             result = evaluate(predicted, item.ground_truth, stem=item.stem)
