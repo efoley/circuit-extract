@@ -99,12 +99,35 @@ def eval_command(
             "synthetic + HSPICE)."
         ),
     ),
+    extractor: str = typer.Option(
+        "vlm",
+        "--extractor",
+        help=(
+            "Which extraction pipeline to use: 'vlm' (default — multi-step VLM) or "
+            "'detect' (zero-shot Grounding DINO detection; requires [detect] extra)."
+        ),
+    ),
     provider: str = typer.Option("gemini", "--provider", "-p", help="VLM provider name."),
     model: str | None = typer.Option(None, "--model", "-m", help="Override provider model."),
     max_items: int = typer.Option(
         50, "--max-items", "-n", help="Max images to evaluate (default 50)."
     ),
     oneshot: bool = typer.Option(False, "--oneshot", help="Use single-prompt baseline."),
+    detect_model: str = typer.Option(
+        "IDEA-Research/grounding-dino-tiny",
+        "--detect-model",
+        help="HuggingFace model id for the --extractor=detect path.",
+    ),
+    box_threshold: float = typer.Option(
+        0.3,
+        "--box-threshold",
+        help="Minimum objectness score for a detection (detect only).",
+    ),
+    text_threshold: float = typer.Option(
+        0.25,
+        "--text-threshold",
+        help="Minimum text-alignment score for a detection (detect only).",
+    ),
     output: Path | None = typer.Option(
         None, "--output", "-o", help="Write JSON results to this file."
     ),
@@ -137,7 +160,7 @@ def eval_command(
     ),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable DEBUG logging."),
 ) -> None:
-    """Evaluate VLM extraction against ground-truth netlists."""
+    """Evaluate component / net extraction against ground-truth netlists."""
     from circuit_extract.datasets import OpenSchematicsDataset, SchematicDataset
     from circuit_extract.eval import EvalResult, evaluate
 
@@ -145,12 +168,30 @@ def eval_command(
     _configure_logging(verbose)
     log = logging.getLogger("circuit_extract.eval")
 
-    provider_kwargs: dict[str, object] = {}
-    if model is not None:
-        provider_kwargs["model"] = model
-    vlm = get_provider(provider, **provider_kwargs)
-    pipeline = VLMExtractionPipeline(provider=vlm, multi_step=not oneshot)
-    log.info("provider=%s model=%s multi_step=%s", vlm.name, vlm.model, not oneshot)
+    if extractor == "vlm":
+        provider_kwargs: dict[str, object] = {}
+        if model is not None:
+            provider_kwargs["model"] = model
+        vlm = get_provider(provider, **provider_kwargs)
+        runnable: object = VLMExtractionPipeline(provider=vlm, multi_step=not oneshot)
+        log.info(
+            "extractor=vlm provider=%s model=%s multi_step=%s",
+            vlm.name,
+            vlm.model,
+            not oneshot,
+        )
+    elif extractor == "detect":
+        from circuit_extract.detect import DetectionPipeline, GroundingDinoDetector
+
+        detector = GroundingDinoDetector(model=detect_model)
+        runnable = DetectionPipeline(
+            detector=detector,
+            box_threshold=box_threshold,
+            text_threshold=text_threshold,
+        )
+        log.info("extractor=detect model=%s", detect_model)
+    else:
+        raise typer.BadParameter(f"unknown --extractor {extractor!r}; choose 'vlm' or 'detect'")
 
     log.info("loading dataset=%s (max_items=%d)...", dataset, max_items)
     loaded: object
@@ -178,7 +219,7 @@ def eval_command(
     for i, item in enumerate(loaded):  # type: ignore[arg-type]
         log.info("[%d/%d] %s", i + 1, total, item.stem)
         try:
-            predicted = pipeline.run(item.image_path)
+            predicted = runnable.run(item.image_path)  # type: ignore[attr-defined]
             result = evaluate(predicted, item.ground_truth, stem=item.stem)
             results.append(result)
             log.info(
@@ -260,6 +301,64 @@ def parse_spice_command(
     from circuit_extract.datasets.spice_parser import parse_spice
 
     netlist = parse_spice(spice_file)
+    payload = netlist.model_dump_json(indent=2)
+    if output is None:
+        typer.echo(payload)
+    else:
+        output.write_text(payload)
+        typer.echo(f"Wrote {output}", err=True)
+
+
+@app.command("detect")
+def detect_command(
+    image: Path = typer.Argument(..., exists=True, readable=True, help="Schematic image."),
+    model: str = typer.Option(
+        "IDEA-Research/grounding-dino-tiny",
+        "--model",
+        "-m",
+        help="HuggingFace model id (tiny is ~170 MB; -base is larger and more accurate).",
+    ),
+    classes: str | None = typer.Option(
+        None,
+        "--classes",
+        help=(
+            "Comma-separated class prompt. Defaults to the built-in schematic vocabulary "
+            "(resistor, capacitor, diode, ...)."
+        ),
+    ),
+    box_threshold: float = typer.Option(0.3, "--box-threshold", help="Minimum objectness score."),
+    text_threshold: float = typer.Option(
+        0.25, "--text-threshold", help="Minimum text-alignment score."
+    ),
+    output: Path | None = typer.Option(
+        None, "--output", "-o", help="Write JSON here instead of stdout."
+    ),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable DEBUG logging."),
+) -> None:
+    """Run zero-shot Grounding DINO detection on IMAGE, output a Netlist."""
+    from circuit_extract.detect import (
+        DEFAULT_CLASSES,
+        DetectionPipeline,
+        GroundingDinoDetector,
+    )
+
+    _configure_logging(verbose)
+
+    class_tuple: tuple[str, ...]
+    if classes is None:
+        class_tuple = DEFAULT_CLASSES
+    else:
+        class_tuple = tuple(c.strip() for c in classes.split(",") if c.strip())
+
+    detector = GroundingDinoDetector(model=model)
+    pipeline = DetectionPipeline(
+        detector=detector,
+        classes=class_tuple,
+        box_threshold=box_threshold,
+        text_threshold=text_threshold,
+    )
+    netlist = pipeline.run(image)
+
     payload = netlist.model_dump_json(indent=2)
     if output is None:
         typer.echo(payload)

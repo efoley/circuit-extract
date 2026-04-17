@@ -25,6 +25,13 @@ cv = [
     "numpy>=1.26",
     "ultralytics>=8.3",
 ]
+# Zero-shot object detection via Grounding DINO (HuggingFace transformers).
+# Torch is large (~1 GB) so this is an opt-in extra.
+detect = [
+    "torch>=2.2",
+    "transformers>=4.40",
+    "timm>=1.0",  # Swin backbone for Grounding DINO
+]
 
 [dependency-groups]
 dev = [

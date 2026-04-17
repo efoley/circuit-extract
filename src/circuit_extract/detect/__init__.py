@@ -1,10 +1,27 @@
-"""Approach 2 (planned): component detection with YOLO.
+"""Component detection backends for Approach 2.
 
-This module will host:
-- YOLO model loading / inference wrappers
-- Dataset adapters for public schematic datasets (CGHD, FCDB, ...)
-- Crop extraction utilities that feed each detected component into a VLM
-  for fine-grained value/pin parsing.
-
-Nothing implemented yet — start with the VLM zero-shot pipeline first.
+We start with **zero-shot open-vocabulary detection** (Grounding DINO), since
+no fine-tuned weights exist for the realistic KiCad renderings in
+``bshada/open-schematics`` and fine-tuning requires a training pipeline we
+don't have yet. Fine-tuned YOLO is a separate follow-up.
 """
+
+from circuit_extract.detect.grounding_dino import (
+    DEFAULT_CLASSES,
+    Detection,
+    GroundingDinoDetector,
+)
+from circuit_extract.detect.pipeline import (
+    DetectionPipeline,
+    classify_detection_label,
+    extract_netlist_via_detection,
+)
+
+__all__ = [
+    "DEFAULT_CLASSES",
+    "Detection",
+    "DetectionPipeline",
+    "GroundingDinoDetector",
+    "classify_detection_label",
+    "extract_netlist_via_detection",
+]
