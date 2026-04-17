@@ -13,6 +13,8 @@ dependencies = [
     "typer>=0.12",
     "python-dotenv>=1.0",
     "huggingface-hub>=1.11.0",
+    "pyarrow>=23.0.1",
+    "kiutils>=1.4.8",
 ]
 
 [project.optional-dependencies]
